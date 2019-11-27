@@ -1,0 +1,21 @@
+<yandex>
+    <logger>
+        <level>trace</level>
+        <log>/var/log/clickhouse-server/clickhouse-server.log</log>
+        <errorlog>/var/log/clickhouse-server/clickhouse-server.err.log</errorlog>
+        <size>1000M</size>
+        <count>10</count>
+        <stderr>/var/log/clickhouse-server/stderr.log</stderr>
+        <stdout>/var/log/clickhouse-server/stdout.log</stdout>
+    </logger>
+
+    <storage_configuration>
+        <disks>
+            <default>
+                <type>s3</type>
+                <endpoint_url>http://s3node1</endpoint_url>
+                <bucket>default</bucket>
+            </default>
+        </disks>
+    </storage_configuration>
+</yandex>
