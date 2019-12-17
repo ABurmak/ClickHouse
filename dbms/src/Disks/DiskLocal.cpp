@@ -14,7 +14,7 @@ namespace ErrorCodes
     extern const int EXCESSIVE_ELEMENT_IN_CONFIG;
 }
 
-std::mutex DiskLocal::mutex;
+std::mutex IDisk::reservationMutex;
 
 ReservationPtr DiskLocal::reserve(UInt64 bytes)
 {
@@ -25,7 +25,7 @@ ReservationPtr DiskLocal::reserve(UInt64 bytes)
 
 bool DiskLocal::tryReserve(UInt64 bytes)
 {
-    std::lock_guard lock(mutex);
+    std::lock_guard lock(IDisk::reservationMutex);
     if (bytes == 0)
     {
         LOG_DEBUG(&Logger::get("DiskLocal"), "Reserving 0 bytes on disk " << backQuote(name));
@@ -70,7 +70,7 @@ UInt64 DiskLocal::getAvailableSpace() const
 
 UInt64 DiskLocal::getUnreservedSpace() const
 {
-    std::lock_guard lock(mutex);
+    std::lock_guard lock(IDisk::reservationMutex);
     auto available_space = getAvailableSpace();
     available_space -= std::min(available_space, reserved_bytes);
     return available_space;
@@ -145,10 +145,14 @@ std::unique_ptr<WriteBuffer> DiskLocal::writeFile(const String & path, size_t bu
     return std::make_unique<WriteBufferFromFile>(disk_path + path, buf_size, flags);
 }
 
+void DiskLocal::remove(const String & path)
+{
+    Poco::File(disk_path + path).remove(true);
+}
 
 void DiskLocalReservation::update(UInt64 new_size)
 {
-    std::lock_guard lock(DiskLocal::mutex);
+    std::lock_guard lock(IDisk::reservationMutex);
     disk->reserved_bytes -= size;
     size = new_size;
     disk->reserved_bytes += size;
@@ -158,7 +162,7 @@ DiskLocalReservation::~DiskLocalReservation()
 {
     try
     {
-        std::lock_guard lock(DiskLocal::mutex);
+        std::lock_guard lock(IDisk::reservationMutex);
         if (disk->reserved_bytes < size)
         {
             disk->reserved_bytes = 0;
@@ -202,6 +206,11 @@ void registerDiskLocal(DiskFactory & factory)
                 throw Exception("Disk path can not be empty. Disk " + name, ErrorCodes::UNKNOWN_ELEMENT_IN_CONFIG);
             if (path.back() != '/')
                 throw Exception("Disk path must end with /. Disk " + name, ErrorCodes::UNKNOWN_ELEMENT_IN_CONFIG);
+        }
+
+        if (Poco::File disk{path}; !disk.canRead() || !disk.canWrite())
+        {
+            throw Exception("There is no RW access to disk " + name + " (" + path + ")", ErrorCodes::PATH_ACCESS_DENIED);
         }
 
         bool has_space_ratio = config.has(config_prefix + ".keep_free_space_ratio");

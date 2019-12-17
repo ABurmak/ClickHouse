@@ -110,6 +110,7 @@ void FileChecker::save() const
 
         writeCString("}}", *out);
         out->next();
+        out->finalize();
     }
 
     disk->moveFile(tmp_files_info_path, files_info_path);

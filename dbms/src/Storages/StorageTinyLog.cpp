@@ -145,6 +145,7 @@ private:
         {
             compressed.next();
             plain->next();
+            plain->finalize();
         }
     };
 
