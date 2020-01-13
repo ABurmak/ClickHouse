@@ -1,11 +1,8 @@
-#include <iomanip>
 #include <thread>
-#include <future>
 
 #include <Common/ThreadPool.h>
 
 #include <Poco/DirectoryIterator.h>
-#include <Poco/FileStream.h>
 
 #include <Parsers/ParserCreateQuery.h>
 #include <Parsers/ASTCreateQuery.h>
@@ -13,7 +10,6 @@
 
 #include <Interpreters/InterpreterCreateQuery.h>
 #include <Interpreters/Context.h>
-#include <Interpreters/loadMetadata.h>
 
 #include <Databases/DatabaseOrdinary.h>
 
@@ -21,7 +17,6 @@
 #include <IO/ReadHelpers.h>
 #include <Common/escapeForFileName.h>
 
-#include <Common/Stopwatch.h>
 #include <Common/typeid_cast.h>
 
 
@@ -49,28 +44,53 @@ static void executeCreateQuery(
 }
 
 
+static void loadDatabaseImpl(
+    Context & context,
+    const String & database,
+    const String & database_attach_query,
+    const String & metadata_path,
+    bool force_restore_data)
+{
+    /// Use database with default engine if .sql file with database attach query is absent.
+
+    String attach_query = database_attach_query;
+    if (attach_query.empty())
+        attach_query = "ATTACH DATABASE " + backQuoteIfNeed(database);
+
+    executeCreateQuery(database_attach_query, context, database, metadata_path, force_restore_data);
+}
+
+
 static void loadDatabase(
     Context & context,
     const String & database,
-    const String & database_path,
+    const String & metadata_path,
     bool force_restore_data)
 {
-    /// There may exist .sql file with database creation statement.
-    /// Or, if it is absent, then database with default engine is created.
-
     String database_attach_query;
-    String database_metadata_file = database_path + ".sql";
-
-    if (Poco::File(database_metadata_file).exists())
+    if (Poco::File(metadata_path).exists())
     {
-        ReadBufferFromFile in(database_metadata_file, 1024);
+        ReadBufferFromFile in(metadata_path, 1024);
         readStringUntilEOF(database_attach_query, in);
     }
-    else
-        database_attach_query = "ATTACH DATABASE " + backQuoteIfNeed(database);
 
-    executeCreateQuery(database_attach_query, context, database,
-                       database_metadata_file, force_restore_data);
+    loadDatabaseImpl(context, database, database_attach_query, metadata_path, force_restore_data);
+}
+
+static void loadDatabase(
+    Context & context,
+    const String & database,
+    const DiskFilePtr & metadata_file,
+    bool force_restore_data)
+{
+    String database_attach_query;
+    if (metadata_file->exists())
+    {
+        auto in = metadata_file->read();
+        readStringUntilEOF(database_attach_query, *in);
+    }
+
+    loadDatabaseImpl(context, database, database_attach_query, metadata_file->fullPath(), force_restore_data);
 }
 
 
@@ -79,8 +99,6 @@ static void loadDatabase(
 
 void loadMetadata(Context & context)
 {
-    String path = context.getPath() + "metadata";
-
     /** There may exist 'force_restore_data' file, that means,
       *  skip safety threshold on difference of data parts while initializing tables.
       * This file is deleted after successful loading of tables.
@@ -89,10 +107,13 @@ void loadMetadata(Context & context)
     Poco::File force_restore_data_flag_file(context.getFlagsPath() + "force_restore_data");
     bool has_force_restore_data_flag = force_restore_data_flag_file.exists();
 
+    auto & disk = context.getDefaultDisk();
+    auto metadata_dir = disk->file("metadata");
+
     /// Loop over databases.
-    std::map<String, String> databases;
-    Poco::DirectoryIterator dir_end;
-    for (Poco::DirectoryIterator it(path); it != dir_end; ++it)
+    std::map<String, DiskFilePtr> databases;
+    DiskDirectoryIterator dir_end;
+    for (DiskDirectoryIterator it(metadata_dir); it != dir_end; ++it)
     {
         if (!it->isDirectory())
             continue;
@@ -104,11 +125,12 @@ void loadMetadata(Context & context)
         if (it.name() == SYSTEM_DATABASE)
             continue;
 
-        databases.emplace(unescapeForFileName(it.name()), it.path().toString());
+        auto metadata_file = disk->file("metadata/" + it.name() + ".sql");
+        databases.emplace(unescapeForFileName(it.name()), metadata_file);
     }
 
-    for (const auto & [name, db_path] : databases)
-        loadDatabase(context, name, db_path, has_force_restore_data_flag);
+    for (const auto & [name, metadata_file] : databases)
+        loadDatabase(context, name, metadata_file, has_force_restore_data_flag);
 
     if (has_force_restore_data_flag)
     {
@@ -139,7 +161,7 @@ void loadMetadataSystem(Context & context)
         Poco::File(global_path + "data/" SYSTEM_DATABASE).createDirectories();
         Poco::File(global_path + "metadata/" SYSTEM_DATABASE).createDirectories();
 
-        auto system_database = std::make_shared<DatabaseOrdinary>(SYSTEM_DATABASE, global_path + "metadata/" SYSTEM_DATABASE, context);
+        auto system_database = std::make_shared<DatabaseOrdinary>(SYSTEM_DATABASE, global_path + "metadata/" SYSTEM_DATABASE ".sql", context);
         context.addDatabase(SYSTEM_DATABASE, system_database);
     }
 
